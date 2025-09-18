@@ -1,10 +1,11 @@
-package main;
+package main
 
 import (
-	"fmt"
+	"bazil.org/fuse"
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -14,80 +15,79 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"bazil.org/fuse"
 )
 
-type davEmpty struct {}
+type davEmpty struct{}
 type davSem chan davEmpty
 
 type DavClient struct {
-	Url		string
-	Username	string
-	Password	string
-	Cookie		string
-	Methods		map[string]bool
-	DavSupport	map[string]bool
-	IsSabre		bool
-	IsApache	bool
-	PutDisabled	bool
-	MaxConns	int
-	MaxIdleConns	int
-	base		string
-	cc		*http.Client
-	davSem		davSem
+	Url          string
+	Username     string
+	Password     string
+	Cookie       string
+	Methods      map[string]bool
+	DavSupport   map[string]bool
+	IsSabre      bool
+	IsApache     bool
+	PutDisabled  bool
+	MaxConns     int
+	MaxIdleConns int
+	base         string
+	cc           *http.Client
+	davSem       davSem
 }
 
 type DavError struct {
-	Code		int
-	Message		string
-	Location	string
-	Errnum		syscall.Errno
+	Code     int
+	Message  string
+	Location string
+	Errnum   syscall.Errno
 }
 
 type Dnode struct {
-	Name		string
-	Target		string
-	IsDir		bool
-	IsLink		bool
-	Mtime		time.Time
-	Ctime		time.Time
-	Size		uint64
+	Name   string
+	Target string
+	IsDir  bool
+	IsLink bool
+	Mtime  time.Time
+	Ctime  time.Time
+	Size   uint64
 }
 
 type Props struct {
-	Name		string		`xml:"-"`
-	ResourceType_	ResourceType	`xml:"resourcetype"`
-	RefTarget_	RefTarget	`xml:"reftarget"`
-	ResourceType	string		`xml:"-"`
-	RefTarget	string		`xml:"-"`
-	CreationDate	string		`xml:"creationdate"`
-	LastModified	string		`xml:"getlastmodified"`
-	Etag		string		`xml:"getetag"`
-	ContentLength	string		`xml:"getcontentlength"`
-	SpaceUsed	string		`xml:"quota-used-bytes"`
-	SpaceFree	string		`xml:"quota-available-bytes"`
+	Name          string       `xml:"-"`
+	ResourceType_ ResourceType `xml:"resourcetype"`
+	RefTarget_    RefTarget    `xml:"reftarget"`
+	ResourceType  string       `xml:"-"`
+	RefTarget     string       `xml:"-"`
+	CreationDate  string       `xml:"creationdate"`
+	LastModified  string       `xml:"getlastmodified"`
+	Etag          string       `xml:"getetag"`
+	ContentLength string       `xml:"getcontentlength"`
+	SpaceUsed     string       `xml:"quota-used-bytes"`
+	SpaceFree     string       `xml:"quota-available-bytes"`
 }
 
 type ResourceType struct {
-	Collection	*struct{}	`xml:"collection"`
-	RedirectRef	*struct{}	`xml:"redirectref"`
+	Collection  *struct{} `xml:"collection"`
+	RedirectRef *struct{} `xml:"redirectref"`
 }
 
 type RefTarget struct {
-	Href		*string		`xml:"href"`
+	Href *string `xml:"href"`
 }
 
 type Propstat struct {
-	Props		*Props		`xml:"prop"`
+	Props *Props `xml:"prop"`
 }
 
 type Response struct {
-	Href		string		`xml:"href"`
-	Propstat	*Propstat	`xml:"propstat"`
+	Href     string    `xml:"href"`
+	Propstat *Propstat `xml:"propstat"`
 }
 
 type MultiStatus struct {
-	Responses	[]Response	`xml:"response"`
+	Responses []Response `xml:"response"`
 }
 
 var mostProps = "<D:resourcetype/><D:creationdate/><D:getlastmodified/><D:getetag/><D:getcontentlength/>"
@@ -95,13 +95,13 @@ var mostProps = "<D:resourcetype/><D:creationdate/><D:getlastmodified/><D:geteta
 var davTimeFormat = "2006-01-02T15:04:05Z"
 
 var davToErrnoMap = map[int]syscall.Errno{
-	403:	syscall.EACCES,
-	404:	syscall.ENOENT,
-	405:	syscall.EACCES,
-	408:	syscall.ETIMEDOUT,
-	409:	syscall.ENOENT,
-	416:	syscall.ERANGE,
-	504:	syscall.ETIMEDOUT,
+	403: syscall.EACCES,
+	404: syscall.ENOENT,
+	405: syscall.EACCES,
+	408: syscall.ETIMEDOUT,
+	409: syscall.ENOENT,
+	416: syscall.ERANGE,
+	504: syscall.ETIMEDOUT,
 }
 
 var userAgent string
@@ -110,7 +110,7 @@ func init() {
 	userAgent = fmt.Sprintf("fuse-webdavfs/0.1 (Go) %s (%s)", runtime.GOOS, runtime.GOARCH)
 }
 
-func davToErrno(err *DavError) (*DavError) {
+func davToErrno(err *DavError) *DavError {
 	if fe, ok := davToErrnoMap[err.Code]; ok {
 		err.Errnum = fe
 		return err
@@ -120,17 +120,17 @@ func davToErrno(err *DavError) (*DavError) {
 }
 
 func statusIsValid(resp *http.Response) bool {
-	return resp.StatusCode / 100 == 2
+	return resp.StatusCode/100 == 2
 }
 
 func statusIsRedirect(resp *http.Response) bool {
-	return resp.StatusCode / 100 == 3
+	return resp.StatusCode/100 == 3
 }
 
 func stripQuotes(s string) string {
 	l := len(s)
-	if l > 1 && s[0] == '"' && s [l-1] == '"' {
-		return s[1:l-1]
+	if l > 1 && s[0] == '"' && s[l-1] == '"' {
+		return s[1 : l-1]
 	}
 	return s
 }
@@ -162,7 +162,7 @@ func dirName(s string) string {
 	return "/"
 }
 
-func parseTime (s string) (t time.Time) {
+func parseTime(s string) (t time.Time) {
 	if len(s) > 0 && s[0] >= '0' && s[0] <= '9' {
 		t, _ = time.Parse(davTimeFormat, s)
 	} else {
@@ -173,7 +173,7 @@ func parseTime (s string) (t time.Time) {
 
 func joinPath(s1, s2 string) string {
 	if (len(s1) > 0 && s1[len(s1)-1] == '/') ||
-	   (len(s2) > 0 && s2[0] == '/') {
+		(len(s2) > 0 && s2[0] == '/') {
 		return s1 + s2
 	}
 	return s1 + "/" + s2
@@ -189,7 +189,7 @@ func stripHrefPrefix(href string, prefix string) (string, bool) {
 		name = name[len(prefix):]
 	}
 	i := strings.Index(name, "/")
-	if i >= 0 && i < len(name) - 1 {
+	if i >= 0 && i < len(name)-1 {
 		return "", false
 	}
 	return name, true
@@ -266,12 +266,12 @@ func (d *DavClient) buildRequest(method string, path string, b ...interface{}) (
 			blen = -1
 		}
 	}
-	u := url.URL{ Path: path }
-	req, err = http.NewRequest(method, d.Url + u.EscapedPath(), body)
+	u := url.URL{Path: path}
+	req, err = http.NewRequest(method, d.Url+u.EscapedPath(), body)
 	if err != nil {
 		return
 	}
-	if (blen >= 0) {
+	if blen >= 0 {
 		if blen == 0 {
 			// Need this to FORCE the http client to send a
 			// Content-Length header for size 0.
@@ -319,8 +319,8 @@ func (d *DavClient) do(req *http.Request) (resp *http.Response, err error) {
 	resp, err = d.cc.Do(req)
 	if err == nil && !statusIsValid(resp) {
 		err = davToErrno(&DavError{
-			Message: resp.Status,
-			Code: resp.StatusCode,
+			Message:  resp.Status,
+			Code:     resp.StatusCode,
 			Location: resp.Header.Get("Location"),
 		})
 	}
@@ -346,7 +346,7 @@ func (d *DavClient) Mount() (err error) {
 		tr.DisableCompression = true
 
 		d.cc = &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout:   60 * time.Second,
 			Transport: &tr,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return errors.New("400 Will not follow redirect")
@@ -428,7 +428,7 @@ func (d *DavClient) PropFind(path string, depth int, props []string) (ret []*Pro
 	} else {
 		a = append(a, "<D:prop>")
 		for _, s := range props {
-			a = append(a, "<D:" + s + "/>")
+			a = append(a, "<D:"+s+"/>")
 		}
 		a = append(a, "</D:prop>")
 	}
@@ -519,7 +519,7 @@ func (d *DavClient) PropFindWithRedirect(path string, depth int, props []string)
 
 	// did we get a redirect?
 	if daverr, ok := err.(*DavError); ok {
-		if daverr.Code / 100 != 3 || daverr.Location == "" {
+		if daverr.Code/100 != 3 || daverr.Location == "" {
 			return
 		}
 		url, err2 := url.ParseRequestURI(daverr.Location)
@@ -527,8 +527,8 @@ func (d *DavClient) PropFindWithRedirect(path string, depth int, props []string)
 			return
 		}
 		// if it's just a "this is a directory" redirect, retry.
-		if url.Path == d.base + path + "/" {
-			ret, err = d.PropFind(path + "/", depth, props)
+		if url.Path == d.base+path+"/" {
+			ret, err = d.PropFind(path+"/", depth, props)
 		}
 	}
 	return
@@ -564,8 +564,8 @@ func (d *DavClient) Readdir(path string, detail bool) (ret []Dnode, err error) {
 			continue
 		}
 		n := Dnode{
-			Name: name,
-			IsDir: p.ResourceType == "collection",
+			Name:   name,
+			IsDir:  p.ResourceType == "collection",
 			IsLink: p.ResourceType == "redirectref",
 			Target: p.RefTarget,
 		}
@@ -607,12 +607,12 @@ func (d *DavClient) Stat(path string) (ret Dnode, err error) {
 	p := props[0]
 	size, _ := strconv.ParseUint(p.ContentLength, 10, 64)
 	ret = Dnode{
-		Name: stripLastSlash(p.Name),
+		Name:  stripLastSlash(p.Name),
 		IsDir: p.ResourceType == "collection",
 		Mtime: parseTime(p.LastModified),
 		Ctime: parseTime(p.CreationDate),
-		Size: size,
-	} 
+		Size:  size,
+	}
 	return
 }
 
@@ -650,9 +650,9 @@ func (d *DavClient) GetRange(path string, offset int64, length int) (data []byte
 		return
 	}
 	partial := false
-	if (offset >= 0 && length >= 0 ) {
+	if offset >= 0 && length >= 0 {
 		partial = true
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset + int64(length) - 1))
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+int64(length)-1))
 	}
 	resp, err := d.do(req)
 	if err != nil {
@@ -667,12 +667,12 @@ func (d *DavClient) GetRange(path string, offset int64, length int) (data []byte
 	if partial && resp.StatusCode != 206 {
 		err = davToErrno(&DavError{
 			Message: "416 Range Not Satisfiable",
-			Code: 416,
+			Code:    416,
 		})
 		return
 	}
 	data, err = ioutil.ReadAll(resp.Body)
-	if len(data) > length {
+	if length >= 0 && len(data) > length {
 		data = data[:length]
 	}
 	return
@@ -763,7 +763,7 @@ func (d *DavClient) Move(oldPath, newPath string) (err error) {
 		// multipart response means there were errors.
 		err = davToErrno(&DavError{
 			Message: "500 unexpected error during MOVE",
-			Code: 500,
+			Code:    500,
 		})
 	}
 	return
@@ -851,7 +851,7 @@ func (d *DavClient) PutRange(path string, data []byte, offset int64, create bool
 	}
 	err = davToErrno(&DavError{
 		Message: "405 Method Not Allowed",
-		Code: 405,
+		Code:    405,
 	})
 	return
 }
@@ -863,14 +863,6 @@ func (d *DavClient) CanPutRange() bool {
 func (d *DavClient) Put(path string, data []byte, create bool, excl bool) (created bool, err error) {
 	d.semAcquire()
 	defer d.semRelease()
-
-	if !d.CanPutRange() {
-		err = davToErrno(&DavError{
-			Message: "405 Method Not Allowed",
-			Code: 405,
-		})
-		return
-	}
 
 	req, err := d.buildRequest("PUT", path, data)
 	if create {
@@ -888,4 +880,3 @@ func (d *DavClient) Put(path string, data []byte, create bool, excl bool) (creat
 	defer resp.Body.Close()
 	return
 }
-

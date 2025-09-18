@@ -1,17 +1,16 @@
-
 package main
 
 import (
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
-	"strconv"
 	"time"
 
-	"golang.org/x/net/context"
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -22,14 +21,15 @@ const (
 )
 
 type WebdavFS struct {
-	Uid		uint32
-	Gid		uint32
-	Mode		uint32
-	dirMode		os.FileMode
-	fileMode	os.FileMode
-	blockSize	uint32
-	root		*Node
+	Uid       uint32
+	Gid       uint32
+	Mode      uint32
+	dirMode   os.FileMode
+	fileMode  os.FileMode
+	blockSize uint32
+	root      *Node
 }
+
 var FS *WebdavFS
 var dav *DavClient
 
@@ -70,13 +70,13 @@ func NewFS(d *DavClient, config WebdavFS) *WebdavFS {
 	FS.fileMode = os.FileMode(FS.Mode &^ uint32(0111))
 
 	FS.dirMode = os.FileMode(FS.Mode)
-	if FS.dirMode & 0007 > 0 {
+	if FS.dirMode&0007 > 0 {
 		FS.dirMode |= 0001
 	}
-	if FS.dirMode & 0070 > 0 {
+	if FS.dirMode&0070 > 0 {
 		FS.dirMode |= 0010
 	}
-	if FS.dirMode & 0700 > 0 {
+	if FS.dirMode&0700 > 0 {
 		FS.dirMode |= 0100
 	}
 	FS.dirMode |= os.ModeDir
@@ -100,13 +100,13 @@ func (fs *WebdavFS) Statfs(ctx context.Context, req *fuse.StatfsRequest, resp *f
 		tPrintf("%d Statfs()", req.Header.ID)
 		defer func() {
 			if err != nil {
-				tPrintf("%d Statfs(): %v",req.Header.ID,  err)
+				tPrintf("%d Statfs(): %v", req.Header.ID, err)
 			} else {
 				tPrintf("%d Statfs(): %v", req.Header.ID, resp)
 			}
 		}()
 	}
-	wanted := []string{ "quota-available-bytes", "quota-used-bytes" }
+	wanted := []string{"quota-available-bytes", "quota-used-bytes"}
 	props, err := dav.PropFind("/", 0, wanted)
 	if err != nil {
 		return
@@ -121,7 +121,7 @@ func (fs *WebdavFS) Statfs(ctx context.Context, req *fuse.StatfsRequest, resp *f
 		spaceFree, _ := strconv.ParseUint(props[0].SpaceFree, 10, 64)
 		if spaceUsed > 0 || spaceFree > 0 {
 			used := (spaceUsed + 4095) / 4096
-			free =  (spaceFree + 4095) / 4096
+			free = (spaceFree + 4095) / 4096
 			if free > 0 {
 				total = used + free
 			}
@@ -129,11 +129,11 @@ func (fs *WebdavFS) Statfs(ctx context.Context, req *fuse.StatfsRequest, resp *f
 	}
 
 	data := fuse.StatfsResponse{
-		Blocks: total,
-		Bfree:	free,
-		Bavail:	free,
-		Bsize:	4096,
-		Frsize:	4096,
+		Blocks:  total,
+		Bfree:   free,
+		Bavail:  free,
+		Bsize:   4096,
+		Frsize:  4096,
 		Namelen: 255,
 	}
 	*resp = data
@@ -159,7 +159,7 @@ func (nd *Node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (ret fs.Node,
 	if err == nil {
 		now := time.Now()
 		nn := Dnode{
-			Name: req.Name,
+			Name:  req.Name,
 			Mtime: now,
 			Ctime: now,
 			IsDir: true,
@@ -241,6 +241,19 @@ func (nd *Node) Rename(ctx context.Context, req *fuse.RenameRequest, destDir fs.
 		isDir = dnode.IsDir
 	} else {
 		isDir = node.IsDir
+		// If the source is a regular file with open mem-handles or not yet uploaded, perform a
+		// fast local rename and defer remote operations to handle flush/close.
+		if !isDir && (len(node.OpenMem) > 0 || !node.RemoteExists) {
+			// Drop any existing dest node locally to emulate overwrite semantics.
+			if req.OldName != req.NewName {
+				if destNode.getNode(req.NewName) != nil {
+					destNode.delNode(req.NewName)
+				}
+				nd.moveNode(destNode, req.OldName, req.NewName)
+			}
+			nd.Unlock()
+			return nil
+		}
 		nd.Unlock()
 	}
 
@@ -277,6 +290,20 @@ func (nd *Node) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error)
 	}
 	nd.incMetaRefThenLock(req.Header.ID)
 	path := joinPath(nd.getPath(), req.Name)
+	// If the node exists only locally (not uploaded), remove locally and cancel pending uploads.
+	if n := nd.getNode(req.Name); n != nil && !n.RemoteExists {
+		// mark deleted and prevent memhandles from uploading
+		n.Deleted = true
+		for _, mh := range n.OpenMem {
+			mh.mu.Lock()
+			mh.dirty = false
+			mh.mu.Unlock()
+		}
+		nd.delNode(req.Name)
+		nd.decMetaRef()
+		nd.Unlock()
+		return nil
+	}
 	nd.Unlock()
 	props, err := dav.PropFindWithRedirect(path, 1, nil)
 	if err == nil {
@@ -377,18 +404,18 @@ func (nd *Node) Getattr(ctx context.Context, req *fuse.GetattrRequest, resp *fus
 				mode = os.ModeSymlink | 0777
 			}
 			resp.Attr = fuse.Attr{
-				Valid: attrValidTime,
-				Inode: nd.Inode,
-				Size: nd.Size,
-				Blocks: (nd.Size + 511) / 512,
-				Atime: atime,
-				Mtime: mtime,
-				Ctime: ctime,
-				Crtime: ctime,
-				Mode: mode,
-				Nlink: 1,
-				Uid: FS.Uid,
-				Gid: FS.Gid,
+				Valid:     attrValidTime,
+				Inode:     nd.Inode,
+				Size:      nd.Size,
+				Blocks:    (nd.Size + 511) / 512,
+				Atime:     atime,
+				Mtime:     mtime,
+				Ctime:     ctime,
+				Crtime:    ctime,
+				Mode:      mode,
+				Nlink:     1,
+				Uid:       FS.Uid,
+				Gid:       FS.Gid,
 				BlockSize: FS.blockSize,
 			}
 		}
@@ -427,6 +454,7 @@ func (nd *Node) Lookup(ctx context.Context, req *fuse.LookupRequest, resp *fuse.
 
 	if err == nil {
 		node := nd.addNode(dnode, true)
+		node.RemoteExists = true
 		rn = node
 	}
 	nd.decIoRef()
@@ -461,20 +489,21 @@ func (nd *Node) ReadDirAll(ctx context.Context) (dd []fuse.Dirent, err error) {
 		ino := nd.Inode
 		if d.Name != "" && d.Name != "." {
 			nn := nd.addNode(d, false)
+			nn.RemoteExists = true
 			ino = nn.Inode
 		}
 
 		tp := fuse.DT_File
-		if (d.IsDir) {
-			tp =fuse.DT_Dir
+		if d.IsDir {
+			tp = fuse.DT_Dir
 		}
-		if (d.IsLink) {
-			tp =fuse.DT_Link
+		if d.IsLink {
+			tp = fuse.DT_Link
 		}
 		dd = append(dd, fuse.Dirent{
-			Name: d.Name,
+			Name:  d.Name,
 			Inode: ino,
-			Type: tp,
+			Type:  tp,
 		})
 
 		seen[d.Name] = true
@@ -492,9 +521,9 @@ func (nd *Node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.
 	path := nd.getPath()
 	nd.Unlock()
 	trunc := flagSet(req.Flags, fuse.OpenTruncate)
-	read  := req.Flags.IsReadWrite() || req.Flags.IsReadOnly()
+	read := req.Flags.IsReadWrite() || req.Flags.IsReadOnly()
 	write := req.Flags.IsReadWrite() || req.Flags.IsWriteOnly()
-	excl  := flagSet(req.Flags, fuse.OpenExclusive)
+	excl := flagSet(req.Flags, fuse.OpenExclusive)
 	if trace(T_FUSE) {
 		tPrintf("%d Create(%s): trunc=%v read=%v write=%v excl=%v",
 			req.Header.ID, req.Name, trunc, read, write, excl)
@@ -507,36 +536,26 @@ func (nd *Node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.
 		}()
 	}
 	path = joinPath(path, req.Name)
-	created := false
-	if trunc {
-		// A simple put with no body creates and truncates the
-		// file if it's not there.
-		created, err = dav.Put(path, []byte{}, true, excl)
-	} else {
-		// A Put-Range at offset 0 with an empty body
-		// creates the file if not present, but doesn't
-		// truncate it.
-		created, err = dav.PutRange(path, []byte{}, 0, true, excl)
-	}
-	if err == nil && excl && !created {
-		err = fuse.EEXIST
+	// Enforce exclusivity: if the target exists, fail.
+	if excl {
+		if _, statErr := dav.Stat(path); statErr == nil {
+			err = fuse.EEXIST
+		}
 	}
 	if err == nil {
-		dnode, err := dav.Stat(path)
-		if err == nil {
-			n := nd.addNode(dnode, true)
-			node = n
-			handle = n
-		} else {
-			nd.invalidateNode(req.Name)
-		}
+		now := time.Now()
+		dn := Dnode{Name: req.Name, IsDir: false, Size: 0, Mtime: now, Ctime: now}
+		n := nd.addNode(dn, true)
+		node = n
+		// In-memory buffer starts empty (trunc semantics). Content will be uploaded on flush/close.
+		mh := newMemHandle(n, []byte{}, req.Flags.IsReadWrite() || req.Flags.IsWriteOnly())
+		handle = mh
 	}
 	nd.Lock()
 	nd.decMetaRef()
 	nd.Unlock()
 	return
 }
-
 
 func (nd *Node) Forget() {
 	if trace(T_FUSE) {
@@ -552,19 +571,51 @@ func (nd *Node) Forget() {
 func (nd *Node) ftruncate(ctx context.Context, size uint64, id fuse.RequestID) (err error) {
 	nd.incMetaRefThenLock(id)
 	path := nd.getPath()
-	nd.Unlock()
-	if size == 0 {
-		if nd.Size > 0 {
-			_, err = dav.Put(path, []byte{}, false, false)
+	// If there are open in-memory handles, resize their buffers and defer PUT to close/flush
+	if len(nd.OpenMem) > 0 {
+		for _, mh := range nd.OpenMem {
+			mh.resize(size)
 		}
-	} else if size > nd.Size {
-		_, err = dav.PutRange(path, []byte{0}, int64(size - 1), false, false)
-	} else if size != nd.Size {
-		err = fuse.ERANGE
+		nd.Size = size
+		nd.decMetaRef()
+		nd.Unlock()
+		return nil
+	}
+	nd.Unlock()
+	if !dav.CanPutRange() {
+		// Fallback: fetch, resize in-memory, and PUT full file.
+		var data []byte
+		if size == 0 {
+			data = []byte{}
+		} else {
+			data, err = dav.Get(path)
+			if err == nil {
+				if uint64(len(data)) < size {
+					nb := make([]byte, size)
+					copy(nb, data)
+					data = nb
+				} else {
+					data = data[:size]
+				}
+			}
+		}
+		if err == nil {
+			_, err = dav.Put(path, data, false, false)
+		}
+	} else {
+		if size == 0 {
+			if nd.Size > 0 {
+				_, err = dav.Put(path, []byte{}, false, false)
+			}
+		} else if size > nd.Size {
+			_, err = dav.PutRange(path, []byte{0}, int64(size-1), false, false)
+		} else if size != nd.Size {
+			err = fuse.ERANGE
+		}
 	}
 	nd.Lock()
 	if err == nil {
-		nd.Size= size
+		nd.Size = size
 	}
 	nd.decMetaRef()
 	nd.Unlock()
@@ -586,7 +637,7 @@ func (nd *Node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fus
 		err = fuse.Errno(syscall.ESTALE)
 		return
 	}
-	invalid := fuse.SetattrMode | fuse. SetattrUid | fuse.SetattrGid |
+	invalid := fuse.SetattrMode | fuse.SetattrUid | fuse.SetattrGid |
 		fuse.SetattrBkuptime | fuse.SetattrCrtime | fuse.SetattrChgtime |
 		fuse.SetattrFlags | fuse.SetattrHandle
 	v := req.Valid
@@ -611,8 +662,8 @@ func (nd *Node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fus
 	// fake setting mtime if it is roughly unchanged.
 	if attrSet(v, fuse.SetattrMtime) {
 		if nd.LastStat.Add(time.Second).Before(time.Now()) ||
-		   req.Mtime.Before(nd.Mtime.Add(-500 * time.Millisecond)) ||
-		   req.Mtime.After(nd.Mtime.Add(500 * time.Millisecond)) {
+			req.Mtime.Before(nd.Mtime.Add(-500*time.Millisecond)) ||
+			req.Mtime.After(nd.Mtime.Add(500*time.Millisecond)) {
 			return fuse.EPERM
 		}
 	}
@@ -639,18 +690,18 @@ func (nd *Node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fus
 		atime = mtime
 	}
 	attr := fuse.Attr{
-		Valid: attrValidTime,
-		Inode: nd.Inode,
-		Size:	nd.Size,
-		Blocks:	nd.Size / 512,
-		Atime: atime,
-		Mtime: mtime,
-		Ctime: ctime,
-		Crtime: ctime,
-		Mode: mode,
-		Nlink: 1,
-		Uid: FS.Uid,
-		Gid: FS.Gid,
+		Valid:     attrValidTime,
+		Inode:     nd.Inode,
+		Size:      nd.Size,
+		Blocks:    nd.Size / 512,
+		Atime:     atime,
+		Mtime:     mtime,
+		Ctime:     ctime,
+		Crtime:    ctime,
+		Mode:      mode,
+		Nlink:     1,
+		Uid:       FS.Uid,
+		Gid:       FS.Gid,
 		BlockSize: 4096,
 	}
 	resp.Attr = attr
@@ -752,7 +803,7 @@ func (nf *Node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wr
 
 func (nf *Node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (handle fs.Handle, err error) {
 	trunc := flagSet(req.Flags, fuse.OpenTruncate)
-	read  := req.Flags.IsReadWrite() || req.Flags.IsReadOnly()
+	read := req.Flags.IsReadWrite() || req.Flags.IsReadOnly()
 	write := req.Flags.IsReadWrite() || req.Flags.IsWriteOnly()
 
 	if trace(T_FUSE) {
@@ -765,7 +816,8 @@ func (nf *Node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.Open
 			}
 		}()
 	}
-	if nf.IsDir {
+	// Treat root or directory nodes as directories.
+	if nf.IsDir || nf.Parent == nil {
 		handle = nf
 		return
 	}
@@ -773,31 +825,24 @@ func (nf *Node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.Open
 	nf.incIoRef(req.Header.ID)
 	path := nf.getPath()
 
-	// See if kernel cache is still valid.
-	dnode, err := dav.Stat(path)
-	if err == nil {
-		nf.Lock()
-		nf.Dnode = dnode
-		nf.statInfoTouch()
-		if dnode.Size == nf.Size && dnode.Mtime == nf.Mtime {
-			resp.Flags = fuse.OpenKeepCache
-		}
-		nf.Unlock()
-
-		// This is actually not called, truncating is
-		// done by calling Setattr with 0 size.
-		if trunc {
-			_, err = dav.Put(path, []byte{}, false, false)
-			if err == nil {
-				nf.Size = 0
-			}
+	// Always use RAM buffer for file I/O: load full file content
+	var data []byte
+	if trunc {
+		data = []byte{}
+	} else {
+		var gerr error
+		data, gerr = dav.Get(path)
+		if gerr != nil {
+			// If not found or other error, start with empty buffer; it will be created on flush by writer.
+			data = []byte{}
+		} else {
+			nf.Lock()
+			nf.RemoteExists = true
+			nf.Unlock()
 		}
 	}
-
 	nf.decIoRef()
-	if err == nil {
-		handle = nf
-	}
+	mh := newMemHandle(nf, data, req.Flags.IsReadWrite() || req.Flags.IsWriteOnly())
+	handle = mh
 	return
 }
-

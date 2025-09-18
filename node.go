@@ -1,7 +1,8 @@
-
 package main
 
 import (
+	"bazil.org/fuse"
+	"bazil.org/fuse/fs"
 	"os"
 	"runtime/debug"
 	"runtime/pprof"
@@ -9,8 +10,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
 )
 
 const (
@@ -20,21 +19,23 @@ const (
 
 type Node struct {
 	Dnode
-	Atime		time.Time
-	LastStat	time.Time
-	DirCache	map[string]Dnode
-	DirCacheTime	time.Time
-	Inode		uint64
-	RefCount	[2]int
-	Deleted		bool
-	Parent		*Node
-	Child		map[string]*Node
-	InUse		bool
+	Atime        time.Time
+	LastStat     time.Time
+	DirCache     map[string]Dnode
+	DirCacheTime time.Time
+	Inode        uint64
+	RefCount     [2]int
+	Deleted      bool
+	Parent       *Node
+	Child        map[string]*Node
+	InUse        bool
+	OpenMem      []*MemHandle
+	RemoteExists bool
 }
 
 var rootNode = &Node{
-	Inode:		1,
-	Child:		make(map[string]*Node),
+	Inode: 1,
+	Child: make(map[string]*Node),
 }
 
 var EBUSY = fuse.Errno(syscall.EBUSY)
@@ -47,7 +48,7 @@ func (nd *Node) Lock() {
 	if trace(T_LOCK) {
 		name := nd.Name
 		stack := debug.Stack()
-		lockTimer = time.AfterFunc(2 * time.Second, func() {
+		lockTimer = time.AfterFunc(2*time.Second, func() {
 			tPrintf("LOCKERR (%s) Lock held longer than 2 seconds:\n%s",
 				name, stack)
 			tPrintf("== dump of all goroutines:")
@@ -87,11 +88,11 @@ func (nd *Node) addNode(d Dnode, really bool) *Node {
 		n.Dnode = d
 		return n
 	}
-	nn := &Node {
-		Inode: fs.GenerateDynamicInode(nd.Inode, d.Name),
-		Dnode: d,
-		Parent: nd,
-		InUse: really,
+	nn := &Node{
+		Inode:    fs.GenerateDynamicInode(nd.Inode, d.Name),
+		Dnode:    d,
+		Parent:   nd,
+		InUse:    really,
 		LastStat: time.Now(),
 	}
 	if d.IsDir {
@@ -173,7 +174,7 @@ func lookupNode(path string) (de *Node) {
 	d := rootNode
 	if path != "/" {
 		pelem := strings.Split(path[1:], "/")
-		for _, n := range(pelem) {
+		for _, n := range pelem {
 			if d.Child == nil || d.Child[n] == nil {
 				return
 			}
@@ -193,7 +194,7 @@ func (de *Node) getPath() string {
 		a = append(a, d.Name)
 	}
 	// reverse
-	for i, j := 0, len(a) - 1; i < j; i, j = i + 1, j - 1 {
+	for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
 		a[i], a[j] = a[j], a[i]
 	}
 	path := "/" + strings.Join(a, "/")
@@ -305,4 +306,3 @@ func (de *Node) decMetaRef() {
 	de.RefCount[RefMeta]--
 	// dbgPrintf("node: decMetaRef %s@%p: ref now %d\n", de.Name, de, de.RefCount[RefMeta])
 }
-

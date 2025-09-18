@@ -1,29 +1,31 @@
-
 package main
 
 import (
-	"fmt"
-	"os"
-	"path"
-	"strings"
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	"fmt"
 	"github.com/pborman/getopt/v2"
+	"os"
+	"os/signal"
+	"path"
+	"strings"
+	"syscall"
 )
 
 const VERSION = "1.0"
 
 type Opts struct {
-	Type		string
-	TraceOpts	string
-	TraceFile	string
-	Daemonize	bool
-	Fake		bool
-	NoMtab		bool
-	Sloppy		bool
-	Verbose		bool
-	RawOptions	string
+	Type       string
+	TraceOpts  string
+	TraceFile  string
+	Daemonize  bool
+	Fake       bool
+	NoMtab     bool
+	Sloppy     bool
+	Verbose    bool
+	RawOptions string
 }
+
 var opts = Opts{}
 var mountOpts MountOptions
 var progname = path.Base(os.Args[0])
@@ -53,7 +55,7 @@ func fatal(err string) {
 
 // rebuild the os.Args array, string username/password.
 func rebuildOptions(url, path string) {
-	args := []string{ os.Args[0], url, path }
+	args := []string{os.Args[0], url, path}
 	bools := ""
 	if opts.NoMtab {
 		bools += "n"
@@ -68,16 +70,16 @@ func rebuildOptions(url, path string) {
 		bools += "v"
 	}
 	if bools != "" {
-		args = append(args, "-" + bools)
+		args = append(args, "-"+bools)
 	}
 	if opts.Type != "" {
-		args = append(args, "-t" + opts.Type)
+		args = append(args, "-t"+opts.Type)
 	}
 	if opts.TraceOpts != "" {
-		args = append(args, "-T" + opts.TraceOpts)
+		args = append(args, "-T"+opts.TraceOpts)
 	}
 	if opts.TraceFile != "" {
-		args = append(args, "-F" + opts.TraceFile)
+		args = append(args, "-F"+opts.TraceFile)
 	}
 	stropts := []string{}
 	for _, o := range strings.Split(opts.RawOptions, ",") {
@@ -95,7 +97,7 @@ func rebuildOptions(url, path string) {
 		}
 	}
 	if len(stropts) > 0 {
-		args = append(args, "-o" + strings.Join(stropts, ","))
+		args = append(args, "-o"+strings.Join(stropts, ","))
 	}
 	os.Args = args
 }
@@ -108,7 +110,7 @@ func main() {
 	var err error
 	for fd < 3 {
 		file, err = os.OpenFile("/dev/null", os.O_RDWR, 0666)
-                if err != nil {
+		if err != nil {
 			fatal(err.Error())
 		}
 		fd = int(file.Fd())
@@ -133,7 +135,7 @@ func main() {
 	// put non-option arguments last.
 	l := len(os.Args)
 	if l > 2 && !strings.HasPrefix(os.Args[1], "-") &&
-		    !strings.HasPrefix(os.Args[2], "-") {
+		!strings.HasPrefix(os.Args[2], "-") {
 		// os.Args = append([]string{}, os.Args[:1]..., os.Args[3:]..., os.Args[1:3]...)
 		args := []string{}
 		args = append(args, os.Args[0])
@@ -152,13 +154,13 @@ func main() {
 		usage(nil, 0)
 	}
 	if version {
-		fmt.Printf("webdavfs %s\n", VERSION);
+		fmt.Printf("webdavfs %s\n", VERSION)
 		os.Exit(0)
 	}
 
 	// check that we have two non-option args at the end
 	if l < 3 || strings.HasPrefix(os.Args[l-2], "-") ||
-	            strings.HasPrefix(os.Args[l-1], "-") {
+		strings.HasPrefix(os.Args[l-1], "-") {
 		usage(nil, 1)
 	}
 
@@ -246,7 +248,7 @@ func main() {
 
 	username := os.Getenv("WEBDAV_USERNAME")
 	password := os.Getenv("WEBDAV_PASSWORD")
-	cookie   := os.Getenv("WEBDAV_COOKIE")
+	cookie := os.Getenv("WEBDAV_COOKIE")
 	if mountOpts.Username != "" {
 		username = mountOpts.Username
 	}
@@ -266,22 +268,24 @@ func main() {
 	}
 
 	dav := &DavClient{
-		Url: url,
-		MaxConns: int(mountOpts.MaxConns),
+		Url:          url,
+		MaxConns:     int(mountOpts.MaxConns),
 		MaxIdleConns: int(mountOpts.MaxIdleConns),
-		Username: username,
-		Password: password,
-		Cookie: cookie,
-		PutDisabled: mountOpts.ReadWriteDirOps,
-		IsSabre: mountOpts.SabreDavPartialUpdate,
+		Username:     username,
+		Password:     password,
+		Cookie:       cookie,
+		PutDisabled:  mountOpts.ReadWriteDirOps,
+		IsSabre:      mountOpts.SabreDavPartialUpdate,
 	}
 	err = dav.Mount()
 	if err != nil {
 		fatal(err.Error())
 	}
+	// Allow mounting even without PUT Range support.
+	// When range writes are unavailable, the filesystem will buffer
+	// per-open writes in RAM and flush with a full PUT on close.
 	if !dav.CanPutRange() && !mountOpts.ReadOnly && !mountOpts.ReadWriteDirOps {
-		fmt.Fprintf(os.Stderr, "%s: no PUT Range support, mounting read-only\n", url)
-		mountOpts.ReadOnly = true
+		fmt.Fprintf(os.Stderr, "%s: no PUT Range support, using in-RAM buffering with full PUT on close\n", url)
 	}
 	if opts.Fake {
 		return
@@ -320,7 +324,33 @@ func main() {
 	if err != nil {
 		fatal(err.Error())
 	}
-	defer c.Close()
+	// Ensure we always attempt to unmount and close the FUSE session on exit
+	defer func() {
+		// Try graceful unmount
+		_ = fuse.Unmount(mountpoint)
+		// Close the connection regardless
+		_ = c.Close()
+		// As a last resort on Linux, try a lazy unmount
+		syscall.Unmount(mountpoint, syscall.MNT_DETACH)
+	}()
+
+	// Unmount on exit signals for clean shutdown
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		s := <-sigc
+		fmt.Fprintf(os.Stderr, "received %s, unmounting %s\n", s, mountpoint)
+		// Try graceful unmount first
+		if err := fuse.Unmount(mountpoint); err != nil {
+			fmt.Fprintf(os.Stderr, "unmount error: %v\n", err)
+			// Fallback to lazy unmount on Linux if needed
+			_ = syscall.Unmount(mountpoint, syscall.MNT_DETACH)
+		}
+		// Close the FUSE connection to stop fs.Serve
+		_ = c.Close()
+		// Exit to ensure process terminates promptly
+		os.Exit(0)
+	}()
 
 	if IsDaemon() {
 		Detach()
@@ -338,4 +368,3 @@ func main() {
 		fatal(err.Error())
 	}
 }
-
