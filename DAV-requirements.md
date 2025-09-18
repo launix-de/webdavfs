@@ -25,9 +25,8 @@ Renaming files, creating directories, removing files/directories
 ## For writing files.
 
 Writing files is a delicate operation, we should take care to do it
-correctly. Right now, the driver checks if we're talking to an Apache
-or SabreDAV implementation because they are the only ones that implement
-partial put.
+correctly. The driver checks if we're talking to an Apache or SabreDAV
+implementation because they are the only ones that implement partial updates.
 
 - If-Match: * / If-None-Match: * support (RFC2616).  
   If-Match: * is used with the PUT method to prevent files being written
@@ -36,13 +35,19 @@ partial put.
   if it already exists.  
   Though this is very basic, there are servers that do not implement this,
   or not correctly.
-- Partial PUT support.  
+- Partial PUT support (preferred).  
   This means writing just a part of a file, updating it in-place, instead
-  of replacing an existing file. webdavFS detects what webserver it is
-  talking  to. If it's Apache it uses PUT + Content-Range, if it's
+  of replacing an existing file. webdavfs detects what webserver it is
+  talking to. If it's Apache it uses PUT + Content-Range, if it's
   SabreDAV it uses PATCH + X-Update-Range. For more info, see:  
   https://blog.sphere.chronosempire.org.uk/2012/11/21/webdav-and-the-http-patch-nightmare  
   http://sabre.io/dav/http-patch/  
+
+- Fallback: full PUT on close.  
+  If partial PUT is not available, webdavfs supports read–write by using a
+  per‑open in‑RAM buffer. The full file is uploaded with a normal PUT on
+  fsync/close or after a short inactivity period. Servers only need to support
+  standard `PUT`, `GET`, and conditional `If-Match`/`If-None-Match`.
 
 ## Partial PUT support as a standard
 

@@ -2,15 +2,13 @@
 
 ## A FUSE filesystem for WEBDAV shares.
 
-Most filesystem drivers for Webdav shares act somewhat like a mirror;
-if a file is read it's first downloaded then cached in its entirety
-on a local drive, then read from there. Writing files is similar or
-even worse- a partial update to a file might involve downloading it first,
-modifying it, then uploading it again. In many cases that is not optimal.
+Most filesystem drivers for WebDAV shares mirror files locally and operate on
+on-disk caches. Partial updates often involve downloading the full file,
+modifying it, then uploading it again.
 
-This filesystem driver behaves like a network filesystem. It doesn't
-cache anything locally, it just sends out partial reads/writes over the
-network.
+webdavfs behaves like a network filesystem and supports efficient partial I/O
+when the server allows it. It also has a robust RAM-backed mode for servers
+without partial write support.
 
 For that to work, you need partial write support- and unfortunately,
 there is no standard for that. See
@@ -22,13 +20,11 @@ used by e.g. NextCloud) for partial writes. So we detect if it's Apache or
 SabreDav we're talking to and then use their specific methods to partially
 update files.
 
-If no support for partial writes is detected, mount.webdavfs will
-print a warning and mount the filesystem read-only. In that case you can
-also use the `rwdirops` mount option, this will make metadata writable
-(i.e. you can use rm / mv / mkdir / rmdir) but you still won't be able
-to write to files.
-
-But if you only need to read files it's still way faster than davfs2 :)
+If no support for partial writes is detected, webdavfs still allows full
+read–write operation by buffering file content in RAM per open handle, and
+flushing the entire file with a single PUT on close (or fsync). There is also
+an inactivity auto‑flush (default 10s) to push changes even if the application
+keeps the file open.
 
 ## What is working
 
@@ -37,6 +33,10 @@ Basic filesystem operations.
 - files: create/delete/read/write/truncate/seek
 - directories: mkdir rmdir readdir
 - query filesystem size (df / vfsstat)
+
+Small files (by default ≤64 MiB) use a per‑open in‑RAM cache for reads/writes,
+and upload on close/fsync/auto‑flush. Large files use ranged I/O when the
+server supports partial updates.
 
 ## What is not yet working
 
@@ -47,7 +47,9 @@ Basic filesystem operations.
 - change permissions (all files are 644, all dirs are 755)
 - change user/group
 - devices / fifos / chardev / blockdev etc
-- truncate(2) / ftruncate(2) for lengths between 1 .. currentfilesize - 1
+- truncate(2) / ftruncate(2) shrinking a file while using ranged I/O.
+  Shrinking is supported for handles using the RAM cache (small files or
+  when the server lacks partial write support).
 
 This is basically because these are mostly just missing properties
 from webdav.
@@ -96,6 +98,7 @@ Using it is simple as:
 ```
 # mount -t webdavfs -ousername=you,password=pass https://webdav.where.ever/subdir /mnt
 ```
+On exit (Ctrl+C or SIGTERM), webdavfs unmounts the mountpoint automatically.
 
 ## Command line options
 
@@ -133,6 +136,15 @@ Using it is simple as:
 | maxidleconns          | Maximum number of idle connections (default 8)
 | sabredav_partialupdate | Use the sabredav partialupdate protocol even when
 |                        | the remote server doesn't advertise support (DANGEROUS)
+| cache_threshold        | Size in bytes above which files use non‑cached ranged
+|                        | I/O (if available). Default 67108864 (64 MiB).
+| cache_threshold_mb     | Same as cache_threshold but specified in MiB. |
+
+Notes:
+- If the server does not support partial writes, all files use the in‑RAM
+  per‑open cache regardless of size.
+- The in‑RAM cache auto‑flushes after 10 seconds of inactivity per open handle,
+  or on fsync/close.
 
 If the webdavfs program is called via `mount -t webdavfs` or as `mount.webdav`,
 it will fork, re-exec and run in the background. In that case it will remove
@@ -168,4 +180,3 @@ experience and better performance, here are a few ideas:
 - DELETE Depth 0 for collections (no delete if non-empty)
 - return updated PROPSTAT information after operations
   like PUT / DELETE / MKCOL / MOVE
-
