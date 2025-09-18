@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -83,8 +82,8 @@ func Daemonize() error {
 
 	// now re-exec ourselves.
 	attrs := os.ProcAttr{
-		Files: []*os.File{ devnull, wout, werr },
-		Sys: &syscall.SysProcAttr{ Setsid: true },
+		Files: []*os.File{devnull, wout, werr},
+		Sys:   &syscall.SysProcAttr{Setsid: true},
 	}
 	os.Setenv(isDaemonEnv, "YES")
 	proc, err := os.StartProcess(binary, os.Args, &attrs)
@@ -126,7 +125,7 @@ func Daemonize() error {
 }
 
 // Returns true when this process is a daemonized child.
-func IsDaemon() (bool) {
+func IsDaemon() bool {
 	return os.Getenv(isDaemonEnv) != ""
 }
 
@@ -141,4 +140,3 @@ func Detach() error {
 	fh.Close()
 	return nil
 }
-

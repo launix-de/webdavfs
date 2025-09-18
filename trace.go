@@ -1,12 +1,11 @@
-
 package main
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
 	"net/http"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -15,7 +14,7 @@ import (
 )
 
 const (
-	T_WEBDAV	= 1 << iota
+	T_WEBDAV = 1 << iota
 	T_HTTP_REQUEST
 	T_HTTP_HEADERS
 	T_FUSE
@@ -28,7 +27,7 @@ var traceFile *os.File
 
 var traceChan = make(chan string, 8)
 
-func startLogger (file *os.File, fileName string) {
+func startLogger(file *os.File, fileName string) {
 	go func() {
 		for {
 			line := <-traceChan
@@ -76,7 +75,7 @@ func tPrintf(format string, args ...interface{}) {
 		lines := strings.Split(s, "\n")
 		l2 := []string{}
 		for _, l := range lines {
-			l2 = append(l2, t + l + "\n")
+			l2 = append(l2, t+l+"\n")
 		}
 		s = strings.Join(l2, "")
 	}
@@ -99,7 +98,7 @@ func tHeaders(hdrs http.Header, prefix string) string {
 	}
 	sort.Strings(h)
 	for _, m := range h {
-		r = append(r, prefix + m + ": " + strings.Join(hdrs[m], "\n") + "\n")
+		r = append(r, prefix+m+": "+strings.Join(hdrs[m], "\n")+"\n")
 	}
 	return strings.Join(r, "")
 }
@@ -136,12 +135,12 @@ func traceredirectStdoutErr() {
 	Dup2(int(traceFile.Fd()), 2)
 }
 
-func traceOpts(opt string, fn string) (err error)  {
+func traceOpts(opt string, fn string) (err error) {
 	if opt == "" {
 		return
 	}
 	opts := strings.Split(opt, ",")
-	for _, o := range(opts) {
+	for _, o := range opts {
 		switch o {
 		case "webdav":
 			traceOptions |= T_WEBDAV
@@ -170,4 +169,3 @@ func traceOpts(opt string, fn string) (err error)  {
 	}
 	return
 }
-

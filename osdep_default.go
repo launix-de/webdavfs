@@ -1,12 +1,12 @@
+//go:build !linux
 // +build !linux
 
 package main
 
 import (
-        "syscall"
+	"syscall"
 )
 
 func Dup2(oldfd int, newfd int) (err error) {
 	return syscall.Dup2(oldfd, newfd)
 }
-

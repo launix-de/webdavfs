@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -8,28 +7,29 @@ import (
 )
 
 type MountOptions struct {
-	AllowRoot		bool
-	AllowOther		bool
-	DefaultPermissions	bool
-	NoDefaultPermissions	bool
-	ReadOnly		bool
-	ReadWrite		bool
-	ReadWriteDirOps		bool
-	Uid			uint32
-	Gid			uint32
-	Mode			uint32
-	Cookie			string
-	Password		string
-	Username		string
-	AsyncRead		bool
-	NonEmpty		bool
-	MaxConns		uint32
-	MaxIdleConns		uint32
-	SabreDavPartialUpdate	bool
+	AllowRoot             bool
+	AllowOther            bool
+	DefaultPermissions    bool
+	NoDefaultPermissions  bool
+	ReadOnly              bool
+	ReadWrite             bool
+	ReadWriteDirOps       bool
+	Uid                   uint32
+	Gid                   uint32
+	Mode                  uint32
+	Cookie                string
+	Password              string
+	Username              string
+	AsyncRead             bool
+	NonEmpty              bool
+	MaxConns              uint32
+	MaxIdleConns          uint32
+	SabreDavPartialUpdate bool
+	CacheThreshold        uint64 // bytes; 0 => default
 }
 
 func parseUInt32(v string, base int, name string, loc *uint32) (err error) {
-	n, err := strconv.ParseUint(v , base, 32)
+	n, err := strconv.ParseUint(v, base, 32)
 	if err == nil {
 		*loc = uint32(n)
 	}
@@ -84,6 +84,23 @@ func parseMountOptions(n string, sloppy bool) (mo MountOptions, err error) {
 			err = parseUInt32(v, 10, "maxidleconns", &mo.MaxIdleConns)
 		case "sabredav_partialupdate":
 			mo.SabreDavPartialUpdate = true
+		case "cache_threshold":
+			// bytes
+			var v64 uint64
+			v64, err = strconv.ParseUint(v, 10, 64)
+			if err == nil {
+				mo.CacheThreshold = v64
+			}
+		case "cache_threshold_mb":
+			// megabytes
+			var v64 uint64
+			v64u32, err2 := strconv.ParseUint(v, 10, 32)
+			if err2 == nil {
+				v64 = uint64(v64u32) * 1024 * 1024
+				mo.CacheThreshold = v64
+			} else {
+				err = err2
+			}
 		default:
 			if !sloppy {
 				err = errors.New(a[0] + ": unknown option")

@@ -21,13 +21,14 @@ const (
 )
 
 type WebdavFS struct {
-	Uid       uint32
-	Gid       uint32
-	Mode      uint32
-	dirMode   os.FileMode
-	fileMode  os.FileMode
-	blockSize uint32
-	root      *Node
+	Uid            uint32
+	Gid            uint32
+	Mode           uint32
+	dirMode        os.FileMode
+	fileMode       os.FileMode
+	blockSize      uint32
+	root           *Node
+	CacheThreshold uint64
 }
 
 var FS *WebdavFS
@@ -825,7 +826,30 @@ func (nf *Node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.Open
 	nf.incIoRef(req.Header.ID)
 	path := nf.getPath()
 
-	// Always use RAM buffer for file I/O: load full file content
+	// Decide whether to use RAM cache or ranged I/O based on file size and threshold
+	useMem := true
+	if dav.CanPutRange() && !trunc && FS.CacheThreshold > 0 {
+		if dnode, stErr := dav.Stat(path); stErr == nil {
+			nf.Lock()
+			nf.Dnode = dnode
+			nf.Size = dnode.Size
+			nf.RemoteExists = true
+			nf.statInfoTouch()
+			nf.Unlock()
+			if uint64(dnode.Size) > FS.CacheThreshold {
+				useMem = false
+			}
+		}
+	}
+
+	if !useMem {
+		// Non-cached handle using ranged I/O
+		nf.decIoRef()
+		handle = nf
+		return
+	}
+
+	// Use RAM buffer: load full file content
 	var data []byte
 	if trunc {
 		data = []byte{}

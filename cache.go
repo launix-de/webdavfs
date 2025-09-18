@@ -9,7 +9,6 @@ func (nd *Node) statInfoFresh() bool {
 	return nd.LastStat.Add(statCacheTime).After(now)
 }
 
-func (nd* Node) statInfoTouch() {
+func (nd *Node) statInfoTouch() {
 	nd.LastStat = time.Now()
 }
-

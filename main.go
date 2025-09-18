@@ -199,6 +199,12 @@ func main() {
 	}
 	config.Mode = mountOpts.Mode
 
+	// Default cache threshold: 64 MiB if not configured
+	if mountOpts.CacheThreshold == 0 {
+		mountOpts.CacheThreshold = 64 * 1024 * 1024
+	}
+	config.CacheThreshold = mountOpts.CacheThreshold
+
 	// if running from fstab with "uid=123,gid=456" set some reasonable
 	// defaults so that that uid can actually access the files.
 	if os.Getuid() == 0 && mountOpts.Uid != 0 && mountOpts.Mode == 0 {

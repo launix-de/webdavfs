@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -8,7 +7,8 @@ import (
 )
 
 var dbgChan = make(chan string, 8)
-func init () {
+
+func init() {
 	go func() {
 		for {
 			line := <-dbgChan
@@ -28,4 +28,3 @@ func dbgJson(obj interface{}) string {
 	}
 	return fmt.Sprintf("%+v", obj)
 }
-
